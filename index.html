@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super Mario - Simplified</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    border: 2px solid #333;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// ==================== CONSTANTS ====================
+const TILE_SIZE = 32;
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 480;
+const MAP_ROWS = 15;
+const MAP_COLS = 210;
+const MAP_WIDTH = MAP_COLS * TILE_SIZE;
+const MAP_HEIGHT = MAP_ROWS * TILE_SIZE;
+
+// Physics (tuned for comfortable feel)
+const GRAVITY = 0.58;
+const JUMP_FORCE = -12.5;
+const MOVE_ACCEL = 0.45;
+const FRICTION = 0.28;
+const MAX_SPEED = 4.5;
+const MAX_FALL_SPEED = 12;
+
+// Player
+const PLAYER_WIDTH = 22;
+const PLAYER_HEIGHT = 30;
+
+// Enemy (faster = harder)
+const ENEMY_WIDTH = 24;
+const ENEMY_HEIGHT = 24;
+const ENEMY_SPEED = 1.5;
+
+// Piranha Plant
+const PIRANHA_WIDTH = 28;
+const PIRANHA_HEIGHT = 32;
+const PIRANHA_PERIOD = 120; // frames for one up-down cycle
+
+// Tile types
+const TILE = {
+  AIR:0, GROUND:1, BRICK:2, QUESTION:3, USED:4,
+  PIPE_TL:5, PIPE_TR:6, PIPE_BL:7, PIPE_BR:8,
+  FLAG_POLE:9, FLAG_TOP:10, FAKE_BRICK:11
+};
+
+// Game states
+const STATE = { START:'start', PLAYING:'playing', DEAD:'dead', WIN:'win', LEVEL_CLEAR:'level_clear', PAUSED:'paused' };
+
+// ==================== CANVAS SETUP ====================
+const canvas = document.getElementById('game');
+canvas.width = CANVAS_WIDTH;
+canvas.height = CANVAS_HEIGHT;
+const ctx = canvas.getContext('2d');
+
+// ==================== SPRITE DEFINITIONS ====================
+const COLOR = {
+  R:'#E52521', S:'#FBB040', B:'#0051FF', r:'#6B3300',
+  e:'#000000', w:'#FFFFFF', G:'#C84C0C', '.':null
+};
+
+const MARIO_STAND = [
+  '....RRRR....','...RRRRRR...','...RRRRRR...','..RRRRRRRR..',
+  '..SSSSSSSS..','..SSSeSSSS..','..SSSSSSSS..','..SSBBBBSS..',
+  '..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..',
+  '..BBBBBBBB..','..BrBBBBrB..','..BrBBBBrB..','..BBBBBBBB..',
+];
+const MARIO_WALK1 = [
+  '....RRRR....','...RRRRRR...','...RRRRRR...','..RRRRRRRR..',
+  '..SSSSSSSS..','..SSSeSSSS..','..SSSSSSSS..','..SSBBBBSS..',
+  '..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..',
+  '..BBBBBBBB..','..BrBBBBrB..','...rBBBBr...','...BBBBBB...',
+];
+const MARIO_WALK2 = [
+  '....RRRR....','...RRRRRR...','...RRRRRR...','..RRRRRRRR..',
+  '..SSSSSSSS..','..SSSeSSSS..','..SSSSSSSS..','..SSBBBBSS..',
+  '..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..',
+  '..BBBBBBBB..','...rBBBBr...','..BrBBBBrB..','..BBBBBBBB..',
+];
+const MARIO_JUMP = [
+  '....RRRR....','...RRRRRR...','...RRRRRR...','..RRRRRRRR..',
+  '..SSSSSSSS..','..SSSeSSSS..','..SSSSSSSS..','..SSBBBBSS..',
+  '..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..','..BBBBBBBB..',
+  '...rBBBBr...','..BrBBBBrB..','..BBBBBBBB..','............',
+];
+const GOOMBA_SPRITE = [
+  '....GGGG....','...GGGGGG...','..GGGGGGGG..','..GGwGGwGG..',
+  '..GGGGGGGG..','..GGGGGGGG..','..GGGGGGGG..','..GGGGGGGG..',
+  '..GGGGGGGG..','..GGGGGGGG..','..GG....GG..','..GG....GG..',
+];
+const GOOMBA_FLAT = [
+  '............','............','............','............',
+  '..GGGGGGGG..','..GGGGGGGG..','..GGwGGwGG..','..GGGGGGGG..',
+  '............','............','............','............',
+];
+// Piranha Plant sprite (16x16 pixel grid)
+const PIRANHA_SPRITE = [
+  '....RRRR....','...RRRRRR...','..RRWWRRRR..','..RWWRRWRR..',
+  '..RWRRWWRR..','..RRRRRRRR..','..GGRGGGGG..','..GGRGGGGG..',
+  '..GGRGGGGG..','..GGGGGGGG..','..GGGGGGGG..','..GGGGGGGG..',
+  '..GG....GG..','..GG....GG..','..GG....GG..','..GG....GG..',
+];
+
+// ==================== LEVEL MAPS ====================
+// Helper: add a 2-wide pipe
+function addPipe(map, c, h) {
+  for (let r = 13 - h; r <= 12; r++) {
+    map[r][c] = TILE.PIPE_TL;
+    map[r][c + 1] = TILE.PIPE_TR;
+  }
+  map[13][c] = TILE.PIPE_BL; map[13][c + 1] = TILE.PIPE_BR;
+  map[14][c] = TILE.PIPE_BL; map[14][c + 1] = TILE.PIPE_BR;
+}
+function addBlock(map, c, r, type) { map[r][c] = type; }
+function addGround(map, from, to) {
+  for (let c = from; c <= to; c++) {
+    map[13][c] = TILE.GROUND;
+    map[14][c] = TILE.GROUND;
+  }
+}
+// Fake bricks: decorative, pass-through, look slightly different
+function addFakeRow(map, col, row, count) {
+  for (let i = 0; i < count; i++) {
+    map[row][col + i] = TILE.FAKE_BRICK;
+  }
+}
+
+// ---- Level 1-1: Classic intro ----
+function createLevel1() {
+  const map = Array.from({length: MAP_ROWS}, () => new Array(MAP_COLS).fill(TILE.AIR));
+  // Classic grassland: wide open, few gaps, gentle introduction
+  addGround(map, 0, 68);
+  addGround(map, 72, 85);
+  addGround(map, 89, MAP_COLS - 1);
+
+  // Fake bricks over gaps to trick players
+  addFakeRow(map, 69, 9, 3);
+  addFakeRow(map, 69, 10, 3);
+  addFakeRow(map, 86, 9, 3);
+  addFakeRow(map, 86, 10, 3);
+
+  // Section 1: Starting area with introductory blocks
+  addBlock(map, 16, 9, TILE.QUESTION);
+  addBlock(map, 20, 9, TILE.BRICK);
+  addBlock(map, 21, 9, TILE.QUESTION);
+  addBlock(map, 22, 9, TILE.BRICK);
+  addBlock(map, 23, 9, TILE.QUESTION);
+  addBlock(map, 24, 9, TILE.BRICK);
+  addBlock(map, 21, 5, TILE.QUESTION); // high coin
+
+  // Section 2: Small pipe
+  addPipe(map, 28, 2);
+  addBlock(map, 32, 9, TILE.BRICK);
+  addBlock(map, 33, 9, TILE.BRICK);
+  addBlock(map, 34, 9, TILE.QUESTION);
+  addBlock(map, 35, 9, TILE.BRICK);
+  addPipe(map, 38, 2); // piranha
+
+  // Section 3: Medium pipe + blocks
+  addPipe(map, 46, 3); // piranha
+  addBlock(map, 48, 9, TILE.BRICK);
+  addBlock(map, 49, 9, TILE.BRICK);
+  addBlock(map, 50, 9, TILE.QUESTION);
+  addBlock(map, 48, 5, TILE.QUESTION);
+
+  // Section 4: Staircase structure
+  addPipe(map, 57, 3);
+  for (let j = 0; j < 4; j++) addBlock(map, 62 + j, 9 - j, TILE.BRICK);
+  for (let j = 0; j < 5; j++) addBlock(map, 63 + j, 9 - j, TILE.BRICK);
+
+  // Section 5: After gap - gentle blocks
+  addBlock(map, 77, 9, TILE.BRICK);
+  addBlock(map, 78, 9, TILE.QUESTION);
+  addBlock(map, 79, 9, TILE.BRICK);
+  addBlock(map, 80, 5, TILE.QUESTION);
+
+  // Section 6: After second gap
+  addBlock(map, 94, 9, TILE.BRICK);
+  addBlock(map, 95, 9, TILE.BRICK);
+  addBlock(map, 96, 9, TILE.QUESTION);
+  addBlock(map, 100, 5, TILE.QUESTION);
+
+  // Section 7: More pipes
+  addPipe(map, 102, 2); // piranha
+  addBlock(map, 106, 9, TILE.BRICK);
+  addBlock(map, 107, 9, TILE.BRICK);
+  addBlock(map, 108, 9, TILE.BRICK);
+  addBlock(map, 109, 9, TILE.QUESTION);
+  addPipe(map, 113, 2); // piranha
+
+  // Section 8: Staircases before flag
+  for (let i = 0; i < 3; i++) {
+    const base = 128 + i * 6;
+    for (let j = 0; j < 4; j++) addBlock(map, base + j, 9 - j, TILE.BRICK);
+  }
+
+  // Section 9: Final stretch
+  addBlock(map, 160, 9, TILE.BRICK);
+  addBlock(map, 161, 9, TILE.QUESTION);
+  addBlock(map, 162, 9, TILE.BRICK);
+  addBlock(map, 168, 9, TILE.BRICK);
+  addBlock(map, 170, 9, TILE.QUESTION);
+
+  // Flag pole
+  for (let r = 3; r <= 12; r++) map[r][198] = TILE.FLAG_POLE;
+  map[2][198] = TILE.FLAG_TOP;
+
+  return map;
+}
+
+// ---- Level 1-2: Underground Cave ----
+// Unique layout: low ceiling, NO gaps, narrow corridors, lots of pipes & Piranhas
+function createLevel2() {
+  const map = Array.from({length: MAP_ROWS}, () => new Array(MAP_COLS).fill(TILE.AIR));
+
+  // Solid ground all the way (no falling death - but lots of enemies & traps)
+  addGround(map, 0, MAP_COLS - 1);
+
+  // Low ceiling - creates a cramped cave feel, real & fake bricks mixed
+  for (let c = 5; c < MAP_COLS - 15; c += 12) {
+    const len = 5 + (c % 7);
+    for (let i = 0; i < len && c + i < MAP_COLS - 15; i++) {
+      if (i === 2 || i === len - 1) {
+        addBlock(map, c + i, 3, TILE.QUESTION);
+      } else if ((c + i) % 7 === 0) {
+        addBlock(map, c + i, 3, TILE.FAKE_BRICK);
+      } else {
+        addBlock(map, c + i, 3, TILE.BRICK);
+      }
+    }
+  }
+
+  // Mid-level brick corridors (row 6-7) - player must navigate through
+  // These create a "tunnel" effect with the ceiling
+  for (let c = 8; c < 45; c += 6) {
+    for (let i = 0; i < 3; i++) {
+      if (i === 1) addBlock(map, c + i, 6, TILE.QUESTION);
+      else addBlock(map, c + i, 6, TILE.BRICK);
+    }
+  }
+  // Second corridor section (row 7)
+  for (let c = 50; c < 100; c += 5) {
+    for (let i = 0; i < 3; i++) {
+      addBlock(map, c + i, 7, (i === 1) ? TILE.QUESTION : TILE.BRICK);
+    }
+  }
+  // Third corridor (row 6 again)
+  for (let c = 105; c < 160; c += 7) {
+    addBlock(map, c, 6, TILE.QUESTION);
+    addBlock(map, c + 1, 6, TILE.BRICK);
+    addBlock(map, c + 2, 6, TILE.FAKE_BRICK);
+  }
+
+  // Normal-height brick rows (row 9)
+  addBlock(map, 10, 9, TILE.QUESTION);
+  addBlock(map, 11, 9, TILE.BRICK);
+  addBlock(map, 12, 9, TILE.BRICK);
+  addBlock(map, 13, 9, TILE.QUESTION);
+
+  addBlock(map, 25, 9, TILE.BRICK);
+  addBlock(map, 26, 9, TILE.QUESTION);
+  addBlock(map, 27, 9, TILE.FAKE_BRICK); // trap in corridor
+  addBlock(map, 28, 9, TILE.BRICK);
+
+  addBlock(map, 40, 9, TILE.QUESTION);
+  addBlock(map, 41, 9, TILE.FAKE_BRICK);
+  addBlock(map, 42, 9, TILE.BRICK);
+
+  addBlock(map, 55, 9, TILE.BRICK);
+  addBlock(map, 56, 9, TILE.BRICK);
+  addBlock(map, 57, 9, TILE.QUESTION);
+  addBlock(map, 58, 9, TILE.FAKE_BRICK);
+
+  addBlock(map, 70, 9, TILE.QUESTION);
+  addBlock(map, 71, 9, TILE.BRICK);
+  addBlock(map, 72, 9, TILE.FAKE_BRICK);
+
+  addBlock(map, 85, 9, TILE.BRICK);
+  addBlock(map, 86, 9, TILE.QUESTION);
+  addBlock(map, 87, 9, TILE.FAKE_BRICK);
+  addBlock(map, 88, 9, TILE.BRICK);
+
+  addBlock(map, 100, 9, TILE.QUESTION);
+  addBlock(map, 101, 9, TILE.FAKE_BRICK);
+
+  addBlock(map, 115, 9, TILE.BRICK);
+  addBlock(map, 116, 9, TILE.QUESTION);
+  addBlock(map, 117, 9, TILE.FAKE_BRICK);
+  addBlock(map, 118, 9, TILE.BRICK);
+
+  addBlock(map, 135, 9, TILE.QUESTION);
+  addBlock(map, 136, 9, TILE.BRICK);
+  addBlock(map, 155, 9, TILE.QUESTION);
+  addBlock(map, 156, 9, TILE.FAKE_BRICK);
+  addBlock(map, 175, 9, TILE.BRICK);
+  addBlock(map, 176, 9, TILE.QUESTION);
+
+  // DENSE pipes - the cave is infested! Many have Piranha Plants
+  addPipe(map, 15, 2);   // piranha
+  addPipe(map, 22, 3);   // piranha
+  addPipe(map, 35, 2);   // piranha
+  addPipe(map, 48, 4);   // tall pipe + piranha
+  addPipe(map, 62, 2);   // piranha
+  addPipe(map, 75, 3);   // piranha
+  addPipe(map, 88, 2);   // piranha
+  addPipe(map, 98, 4);   // tall pipe + piranha
+  addPipe(map, 110, 2);  // piranha
+  addPipe(map, 125, 3);  // piranha
+  addPipe(map, 140, 2);  // piranha
+  addPipe(map, 160, 3);  // piranha
+  addPipe(map, 180, 2);  // piranha
+
+  // Flag pole
+  for (let r = 3; r <= 12; r++) map[r][198] = TILE.FLAG_POLE;
+  map[2][198] = TILE.FLAG_TOP;
+
+  return map;
+}
+
+// ---- Level 1-3: Sky Castle ----
+// Unique layout: minimal ground, floating platforms, vertical platforming
+function createLevel3() {
+  const map = Array.from({length: MAP_ROWS}, () => new Array(MAP_COLS).fill(TILE.AIR));
+
+  // Very little ground - mostly floating platforms!
+  addGround(map, 0, 15);
+  // Gap from 16-19 (must jump to floating platform)
+  addGround(map, 35, 42);
+  // Gap from 43-52
+  addGround(map, 65, 72);
+  // Gap from 73-82
+  addGround(map, 95, 102);
+  // Gap from 103-110
+  addGround(map, 130, 138);
+  // Final stretch to flag
+  addGround(map, 175, MAP_COLS - 1);
+
+  // ===== FLOATING PLATFORMS (the core mechanic of this level) =====
+  // Platform cluster 1: stepping stones over gap 1 (cols 16-34)
+  addFakeRow(map, 18, 9, 3);  // FAKE! looks like a bridge - falls through
+  addBlock(map, 20, 7, TILE.BRICK);
+  addBlock(map, 21, 7, TILE.BRICK);
+  addBlock(map, 22, 7, TILE.QUESTION);
+  addBlock(map, 23, 7, TILE.BRICK);
+  addBlock(map, 25, 5, TILE.BRICK);
+  addBlock(map, 26, 5, TILE.QUESTION);
+  addBlock(map, 27, 5, TILE.BRICK);
+  addBlock(map, 29, 8, TILE.BRICK);
+  addBlock(map, 30, 8, TILE.QUESTION);
+  addBlock(map, 31, 8, TILE.BRICK);
+  addBlock(map, 33, 6, TILE.QUESTION);
+  addBlock(map, 34, 6, TILE.BRICK);
+
+  // Platform cluster 2: over gap 2 (cols 43-64)
+  addFakeRow(map, 45, 8, 4);  // FAKE bridge trap
+  addBlock(map, 44, 6, TILE.BRICK);
+  addBlock(map, 45, 6, TILE.BRICK);
+  addBlock(map, 46, 6, TILE.QUESTION);
+  addBlock(map, 48, 4, TILE.BRICK);
+  addBlock(map, 49, 4, TILE.QUESTION);
+  addBlock(map, 50, 4, TILE.BRICK);
+  addBlock(map, 52, 7, TILE.BRICK);
+  addBlock(map, 53, 7, TILE.FAKE_BRICK); // looks real but isn't!
+  addBlock(map, 54, 7, TILE.QUESTION);
+  addBlock(map, 56, 5, TILE.BRICK);
+  addBlock(map, 57, 5, TILE.BRICK);
+  addBlock(map, 58, 5, TILE.QUESTION);
+  addBlock(map, 60, 8, TILE.BRICK);
+  addBlock(map, 61, 8, TILE.QUESTION);
+  addBlock(map, 63, 6, TILE.QUESTION);
+  addBlock(map, 64, 6, TILE.BRICK);
+
+  // Platform cluster 3: over gap 3 (cols 73-94)
+  addFakeRow(map, 75, 9, 3);  // FAKE ground-level bridge
+  addBlock(map, 74, 7, TILE.BRICK);
+  addBlock(map, 75, 7, TILE.QUESTION);
+  addBlock(map, 76, 7, TILE.BRICK);
+  addBlock(map, 78, 5, TILE.BRICK);
+  addBlock(map, 79, 5, TILE.FAKE_BRICK); // trap among real
+  addBlock(map, 80, 5, TILE.QUESTION);
+  addBlock(map, 82, 8, TILE.BRICK);
+  addBlock(map, 83, 8, TILE.BRICK);
+  addBlock(map, 84, 8, TILE.QUESTION);
+  addBlock(map, 86, 4, TILE.QUESTION);
+  addBlock(map, 87, 4, TILE.BRICK);
+  addBlock(map, 89, 6, TILE.BRICK);
+  addBlock(map, 90, 6, TILE.QUESTION);
+  addBlock(map, 91, 6, TILE.BRICK);
+  addBlock(map, 93, 8, TILE.BRICK);
+  addBlock(map, 94, 8, TILE.QUESTION);
+
+  // Platform cluster 4: over gap 4 (cols 103-129)
+  addFakeRow(map, 105, 8, 3);  // FAKE bridge
+  addBlock(map, 104, 6, TILE.BRICK);
+  addBlock(map, 105, 6, TILE.QUESTION);
+  addBlock(map, 106, 6, TILE.BRICK);
+  addBlock(map, 108, 4, TILE.QUESTION);
+  addBlock(map, 109, 4, TILE.BRICK);
+  addBlock(map, 111, 7, TILE.BRICK);
+  addBlock(map, 112, 7, TILE.FAKE_BRICK); // trap
+  addBlock(map, 113, 7, TILE.BRICK);
+  addBlock(map, 115, 5, TILE.BRICK);
+  addBlock(map, 116, 5, TILE.QUESTION);
+  addBlock(map, 117, 5, TILE.BRICK);
+  addBlock(map, 119, 8, TILE.QUESTION);
+  addBlock(map, 120, 8, TILE.BRICK);
+  addBlock(map, 122, 3, TILE.BRICK);
+  addBlock(map, 123, 3, TILE.QUESTION);
+  addBlock(map, 124, 3, TILE.BRICK);
+  addBlock(map, 126, 6, TILE.BRICK);
+  addBlock(map, 127, 6, TILE.QUESTION);
+  addBlock(map, 128, 6, TILE.BRICK);
+
+  // Platform cluster 5: over gap 5 (cols 139-174)
+  addFakeRow(map, 140, 9, 3);  // FAKE ground bridge
+  addBlock(map, 140, 7, TILE.BRICK);
+  addBlock(map, 141, 7, TILE.QUESTION);
+  addBlock(map, 142, 7, TILE.BRICK);
+  addBlock(map, 145, 5, TILE.BRICK);
+  addBlock(map, 146, 5, TILE.FAKE_BRICK); // trap
+  addBlock(map, 147, 5, TILE.QUESTION);
+  addBlock(map, 150, 8, TILE.BRICK);
+  addBlock(map, 151, 8, TILE.QUESTION);
+  addBlock(map, 153, 4, TILE.BRICK);
+  addBlock(map, 154, 4, TILE.QUESTION);
+  addBlock(map, 155, 4, TILE.BRICK);
+  addBlock(map, 158, 6, TILE.BRICK);
+  addBlock(map, 159, 6, TILE.FAKE_BRICK); // trap
+  addBlock(map, 160, 6, TILE.BRICK);
+  addBlock(map, 162, 8, TILE.QUESTION);
+  addBlock(map, 163, 8, TILE.BRICK);
+  addBlock(map, 166, 5, TILE.BRICK);
+  addBlock(map, 167, 5, TILE.QUESTION);
+  addBlock(map, 168, 5, TILE.BRICK);
+  addBlock(map, 170, 7, TILE.QUESTION);
+  addBlock(map, 171, 7, TILE.BRICK);
+  addBlock(map, 173, 9, TILE.BRICK);
+  addBlock(map, 174, 9, TILE.QUESTION);
+
+  // Tower structure near end (vertical climb)
+  for (let r = 8; r <= 12; r++) addBlock(map, 178, r, TILE.BRICK);
+  addBlock(map, 179, 7, TILE.BRICK);
+  addBlock(map, 180, 5, TILE.BRICK);
+  addBlock(map, 181, 5, TILE.QUESTION);
+  addBlock(map, 182, 5, TILE.BRICK);
+  addBlock(map, 183, 7, TILE.BRICK);
+  addBlock(map, 184, 9, TILE.QUESTION);
+
+  // Pipes on the few ground sections (with Piranhas)
+  addPipe(map, 8, 2);    // piranha
+  addPipe(map, 38, 2);   // piranha
+  addPipe(map, 68, 3);   // piranha
+  addPipe(map, 98, 2);   // piranha
+  addPipe(map, 133, 2);  // piranha
+  addPipe(map, 180, 2);  // piranha
+
+  // Flag pole
+  for (let r = 3; r <= 12; r++) map[r][198] = TILE.FLAG_POLE;
+  map[2][198] = TILE.FLAG_TOP;
+
+  return map;
+}
+
+// ==================== ENEMY & PIRANHA SPAWNS PER LEVEL ====================
+const ENEMY_SPAWNS = {
+  // 1-1: Classic grassland - enemies on ground sections
+  1: [{col:22, row:12}, {col:40, row:12}, {col:55, row:12}, {col:80, row:12}, {col:95, row:12}, {col:110, row:12}, {col:135, row:12}, {col:160, row:12}],
+  // 1-2: Underground cave - DENSE enemies on continuous ground
+  2: [{col:8, row:12}, {col:18, row:12}, {col:30, row:12}, {col:42, row:12}, {col:55, row:12}, {col:68, row:12}, {col:80, row:12}, {col:92, row:12}, {col:105, row:12}, {col:118, row:12}, {col:132, row:12}, {col:148, row:12}, {col:165, row:12}, {col:182, row:12}],
+  // 1-3: Sky castle - enemies on ground sections only (not floating platforms)
+  3: [{col:8, row:12}, {col:38, row:12}, {col:68, row:12}, {col:98, row:12}, {col:133, row:12}, {col:180, row:12}],
+};
+
+// Piranha Plants spawn at pipe locations: {col, pipeTopRow, pipeHeight}
+const PIRANHA_SPAWNS = {
+  // 1-1: Pipes at cols 38, 46, 102, 113
+  1: [{col:38, pipeTopRow:11, pipeHeight:2}, {col:46, pipeTopRow:10, pipeHeight:3}, {col:102, pipeTopRow:11, pipeHeight:2}, {col:113, pipeTopRow:11, pipeHeight:2}],
+  // 1-2: Dense pipes - cave infested with Piranhas! (13 pipes)
+  2: [{col:15, pipeTopRow:11, pipeHeight:2}, {col:22, pipeTopRow:10, pipeHeight:3}, {col:35, pipeTopRow:11, pipeHeight:2}, {col:48, pipeTopRow:9, pipeHeight:4}, {col:62, pipeTopRow:11, pipeHeight:2}, {col:75, pipeTopRow:10, pipeHeight:3}, {col:88, pipeTopRow:11, pipeHeight:2}, {col:98, pipeTopRow:9, pipeHeight:4}, {col:110, pipeTopRow:11, pipeHeight:2}, {col:125, pipeTopRow:10, pipeHeight:3}, {col:140, pipeTopRow:11, pipeHeight:2}, {col:160, pipeTopRow:10, pipeHeight:3}, {col:180, pipeTopRow:11, pipeHeight:2}],
+  // 1-3: Pipes on ground sections (cols 8, 38, 68, 98, 133, 180)
+  3: [{col:8, pipeTopRow:11, pipeHeight:2}, {col:38, pipeTopRow:11, pipeHeight:2}, {col:68, pipeTopRow:10, pipeHeight:3}, {col:98, pipeTopRow:11, pipeHeight:2}, {col:133, pipeTopRow:11, pipeHeight:2}, {col:180, pipeTopRow:11, pipeHeight:2}],
+};
+
+const LEVEL_MAP_FUNCS = { 1: createLevel1, 2: createLevel2, 3: createLevel3 };
+
+// ==================== HELPER: TILE COLLISION ====================
+function isSolid(tileType) {
+  return tileType === TILE.GROUND || tileType === TILE.BRICK ||
+         tileType === TILE.QUESTION || tileType === TILE.USED ||
+         tileType === TILE.PIPE_TL || tileType === TILE.PIPE_TR ||
+         tileType === TILE.PIPE_BL || tileType === TILE.PIPE_BR;
+  // NOTE: FAKE_BRICK is NOT solid - pass through!
+}
+
+function getTile(map, col, row) {
+  if (col < 0 || col >= MAP_COLS || row < 0 || row >= MAP_ROWS) return TILE.AIR;
+  return map[row][col];
+}
+
+// ==================== PLAYER CLASS ====================
+class Player {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.x = 3 * TILE_SIZE;
+    this.y = 13 * TILE_SIZE - PLAYER_HEIGHT;
+    this.vx = 0;
+    this.vy = 0;
+    this.width = PLAYER_WIDTH;
+    this.height = PLAYER_HEIGHT;
+    this.onGround = false;
+    this.facingRight = true;
+    this.animFrame = 0;
+    this.animTimer = 0;
+    this.isInvincible = false;
+    this.invincibleTimer = 0;
+    this.deadTimer = 0;
+
+  }
+
+  update(map, keys, bumpBlocks) {
+    if (this.deadTimer > 0) {
+      this.deadTimer--;
+      this.vy += GRAVITY;
+      this.y += this.vy;
+      return;
+    }
+
+    if (this.isInvincible) {
+      this.invincibleTimer--;
+      if (this.invincibleTimer <= 0) this.isInvincible = false;
+    }
+
+    // Horizontal movement
+    if (keys.left) {
+      this.vx -= MOVE_ACCEL;
+      this.facingRight = false;
+    } else if (keys.right) {
+      this.vx += MOVE_ACCEL;
+      this.facingRight = true;
+    } else {
+      if (this.vx > 0) this.vx = Math.max(0, this.vx - FRICTION);
+      else if (this.vx < 0) this.vx = Math.min(0, this.vx + FRICTION);
+    }
+
+    // Jump: fixed height, every jump identical
+    if ((keys.jump || keys.up) && this.onGround) {
+      this.vy = JUMP_FORCE;
+      this.onGround = false;
+    }
+
+    this.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, this.vx));
+
+    // Gravity
+    this.vy += GRAVITY;
+    if (this.vy > MAX_FALL_SPEED) this.vy = MAX_FALL_SPEED;
+
+    // Vertical collision
+    this.y += this.vy;
+    this.resolveVerticalCollision(map, bumpBlocks);
+
+    // Horizontal collision
+    this.x += this.vx;
+    this.resolveHorizontalCollision(map);
+
+    if (this.x < 0) this.x = 0;
+    if (this.x > MAP_WIDTH - this.width) this.x = MAP_WIDTH - this.width;
+
+    // Fell off map
+    if (this.y > MAP_HEIGHT + 64) {
+      this.die();
+    }
+
+    // Animation
+    if (!this.onGround) {
+      this.animFrame = 2;
+    } else if (Math.abs(this.vx) > 0.5) {
+      this.animTimer++;
+      if (this.animTimer > 8) { this.animTimer = 0; this.animFrame = this.animFrame === 0 ? 1 : 0; }
+    } else {
+      this.animFrame = 0; this.animTimer = 0;
+    }
+  }
+
+  resolveVerticalCollision(map, bumpBlocks) {
+    const left = Math.floor(this.x / TILE_SIZE);
+    const right = Math.floor((this.x + this.width - 1) / TILE_SIZE);
+    const top = Math.floor(this.y / TILE_SIZE);
+    const bottom = Math.floor((this.y + this.height - 1) / TILE_SIZE);
+    this.onGround = false;
+
+    if (this.vy > 0) {
+      for (let c = left; c <= right; c++) {
+        if (isSolid(getTile(map, c, bottom))) {
+          this.y = bottom * TILE_SIZE - this.height;
+          this.vy = 0;
+          this.onGround = true;
+          break;
+        }
+      }
+    } else if (this.vy < 0) {
+      for (let c = left; c <= right; c++) {
+        if (isSolid(getTile(map, c, top))) {
+          this.y = (top + 1) * TILE_SIZE;
+          this.vy = 0;
+          const key = `${c},${top}`;
+          const tile = getTile(map, c, top);
+          if ((tile === TILE.QUESTION || tile === TILE.BRICK) && !bumpBlocks.has(key)) {
+            bumpBlocks.set(key, { offset: -8, timer: 12, col: c, row: top });
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  resolveHorizontalCollision(map) {
+    const left = Math.floor(this.x / TILE_SIZE);
+    const right = Math.floor((this.x + this.width - 1) / TILE_SIZE);
+    const top = Math.floor(this.y / TILE_SIZE);
+    const bottom = Math.floor((this.y + this.height - 1) / TILE_SIZE);
+
+    if (this.vx > 0) {
+      for (let r = top; r <= bottom; r++) {
+        if (isSolid(getTile(map, right, r))) {
+          this.x = right * TILE_SIZE - this.width; this.vx = 0; break;
+        }
+      }
+    } else if (this.vx < 0) {
+      for (let r = top; r <= bottom; r++) {
+        if (isSolid(getTile(map, left, r))) {
+          this.x = (left + 1) * TILE_SIZE; this.vx = 0; break;
+        }
+      }
+    }
+  }
+
+  die() { this.deadTimer = 90; this.vy = -8; this.vx = 0; }
+
+  getBounds() { return { x: this.x, y: this.y, w: this.width, h: this.height }; }
+
+  render(ctx, camera) {
+    if (this.deadTimer > 0 && this.y > CANVAS_HEIGHT + 100) return;
+    if (this.isInvincible && Math.floor(this.invincibleTimer / 4) % 2 === 0) return;
+
+    const sx = Math.round(this.x - camera.x);
+    const sy = Math.round(this.y);
+    let sprite;
+    if (!this.onGround) sprite = MARIO_JUMP;
+    else if (this.animFrame === 0) sprite = MARIO_STAND;
+    else if (this.animFrame === 1) sprite = MARIO_WALK1;
+    else sprite = MARIO_WALK2;
+    drawSprite(ctx, sprite, sx, sy, this.facingRight);
+  }
+}
+
+// ==================== ENEMY CLASS ====================
+class Enemy {
+  constructor(col, row) {
+    this.startX = col * TILE_SIZE + (TILE_SIZE - ENEMY_WIDTH) / 2;
+    this.x = this.startX;
+    this.y = row * TILE_SIZE + (TILE_SIZE - ENEMY_HEIGHT);
+    this.vx = -ENEMY_SPEED;
+    this.vy = 0;
+    this.width = ENEMY_WIDTH;
+    this.height = ENEMY_HEIGHT;
+    this.alive = true;
+    this.squishTimer = 0;
+    this.animTimer = 0;
+    this.animFrame = 0;
+  }
+
+  update(map) {
+    if (!this.alive) { this.squishTimer--; return this.squishTimer <= 0; }
+
+    this.vy += GRAVITY;
+    if (this.vy > MAX_FALL_SPEED) this.vy = MAX_FALL_SPEED;
+
+    this.y += this.vy;
+    const bottom = Math.floor((this.y + this.height - 1) / TILE_SIZE);
+    const left = Math.floor(this.x / TILE_SIZE);
+    const right = Math.floor((this.x + this.width - 1) / TILE_SIZE);
+    let onGround = false;
+    for (let c = left; c <= right; c++) {
+      if (isSolid(getTile(map, c, bottom))) {
+        this.y = bottom * TILE_SIZE - this.height; this.vy = 0; onGround = true; break;
+      }
+    }
+
+    this.x += this.vx;
+    const newLeft = Math.floor(this.x / TILE_SIZE);
+    const newRight = Math.floor((this.x + this.width - 1) / TILE_SIZE);
+    const top = Math.floor(this.y / TILE_SIZE);
+    const newBottom = Math.floor((this.y + this.height - 1) / TILE_SIZE);
+
+    if (this.vx < 0) {
+      for (let r = top; r <= newBottom; r++) {
+        if (isSolid(getTile(map, newLeft, r))) { this.x = (newLeft + 1) * TILE_SIZE; this.vx = ENEMY_SPEED; break; }
+      }
+    } else {
+      for (let r = top; r <= newBottom; r++) {
+        if (isSolid(getTile(map, newRight, r))) { this.x = newRight * TILE_SIZE - this.width; this.vx = -ENEMY_SPEED; break; }
+      }
+    }
+
+    if (onGround) {
+      const aheadCol = this.vx > 0 ? newRight + 1 : newLeft - 1;
+      const belowRow = newBottom + 1;
+      if (aheadCol >= 0 && aheadCol < MAP_COLS && belowRow < MAP_ROWS) {
+        if (!isSolid(getTile(map, aheadCol, belowRow))) { this.vx = -this.vx; }
+      }
+    }
+
+    if (this.y > MAP_HEIGHT + 64) { this.alive = false; this.squishTimer = 0; return true; }
+
+    this.animTimer++;
+    if (this.animTimer > 15) { this.animTimer = 0; this.animFrame = this.animFrame === 0 ? 1 : 0; }
+    return false;
+  }
+
+  squish() { this.alive = false; this.squishTimer = 30; }
+  getBounds() { if (!this.alive) return null; return { x: this.x, y: this.y, w: this.width, h: this.height }; }
+
+  render(ctx, camera) {
+    if (!this.alive && this.squishTimer <= 0) return;
+    const sx = Math.round(this.x - camera.x);
+    const sy = Math.round(this.y);
+    drawSprite(ctx, this.alive ? GOOMBA_SPRITE : GOOMBA_FLAT, sx, sy, true);
+  }
+}
+
+// ==================== PIRANHA PLANT CLASS ====================
+class PiranhaPlant {
+  constructor(col, pipeTopRow, pipeHeight) {
+    this.pipeCol = col;
+    this.pipeTopRow = pipeTopRow;
+    this.pipeHeight = pipeHeight;
+    // Position: centered in the 2-tile-wide pipe
+    this.x = col * TILE_SIZE + (TILE_SIZE * 2 - PIRANHA_WIDTH) / 2;
+    this.baseY = pipeTopRow * TILE_SIZE; // top of pipe
+    this.y = this.baseY; // current Y (starts hidden)
+    this.width = PIRANHA_WIDTH;
+    this.height = PIRANHA_HEIGHT;
+    this.alive = true;
+    this.timer = 0;
+    this.phase = 'rising'; // rising, up, falling, down
+    this.phaseTimer = 0;
+    // Rise: plant emerges from pipe top. Up: fully exposed. Fall: retreating. Down: hidden.
+    this.riseHeight = PIRANHA_HEIGHT + 4;
+    this.currentRise = 0; // 0 = fully hidden, riseHeight = fully exposed
+    this.mouthOpen = true;
+    this.mouthTimer = 0;
+  }
+
+  update(map) {
+    if (!this.alive) return true;
+    this.timer++;
+    this.mouthTimer++;
+    if (this.mouthTimer > 20) { this.mouthOpen = !this.mouthOpen; this.mouthTimer = 0; }
+
+    switch (this.phase) {
+      case 'rising':
+        this.currentRise += 1.5;
+        if (this.currentRise >= this.riseHeight) {
+          this.currentRise = this.riseHeight;
+          this.phase = 'up';
+          this.phaseTimer = 80; // stay up for a while
+        }
+        break;
+      case 'up':
+        this.phaseTimer--;
+        if (this.phaseTimer <= 0) this.phase = 'falling';
+        break;
+      case 'falling':
+        this.currentRise -= 1.5;
+        if (this.currentRise <= 0) {
+          this.currentRise = 0;
+          this.phase = 'down';
+          this.phaseTimer = 60; // stay hidden for a while
+        }
+        break;
+      case 'down':
+        this.phaseTimer--;
+        if (this.phaseTimer <= 0) this.phase = 'rising';
+        break;
+    }
+
+    // Update Y position: plant rises ABOVE pipe top
+    this.y = this.baseY - this.currentRise;
+    return false;
+  }
+
+  getBounds() {
+    if (!this.alive || this.currentRise < 8) return null; // hidden = no collision
+    return { x: this.x, y: this.y, w: this.width, h: Math.min(this.currentRise, this.height) };
+  }
+
+  render(ctx, camera) {
+    if (!this.alive) return;
+    if (this.currentRise < 2) return; // fully hidden, don't render
+
+    const sx = Math.round(this.x - camera.x);
+    const sy = Math.round(this.y);
+
+    // Draw the plant using sprite (only the visible portion)
+    const visibleH = Math.min(this.currentRise, PIRANHA_HEIGHT);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(sx - 2, sy, PIRANHA_WIDTH + 4, visibleH + 2);
+    ctx.clip();
+    drawSprite(ctx, PIRANHA_SPRITE, sx, sy, true);
+    ctx.restore();
+
+    // Draw green stem going into pipe
+    if (this.currentRise < this.riseHeight) {
+      const stemTop = sy + PIRANHA_HEIGHT;
+      const stemBottom = this.baseY + TILE_SIZE;
+      if (stemBottom > stemTop) {
+        ctx.fillStyle = '#00A800';
+        ctx.fillRect(sx + 6, stemTop, 4, stemBottom - stemTop);
+        ctx.fillRect(sx + 16, stemTop, 4, stemBottom - stemTop);
+      }
+    }
+
+    // Draw mouth indicator (small red/white dot)
+    if (this.mouthOpen && this.currentRise > 12) {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(sx + 10, sy + 6, 6, 4);
+      ctx.fillStyle = '#FF0000';
+      ctx.fillRect(sx + 11, sy + 7, 4, 2);
+    }
+  }
+}
+
+// ==================== PARTICLE CLASS ====================
+class Particle {
+  constructor(x, y, vx, vy, type, life) {
+    this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+    this.type = type; this.life = life || 30; this.maxLife = this.life;
+  }
+  update() { this.x += this.vx; this.y += this.vy; this.vy += GRAVITY * 0.5; this.life--; return this.life <= 0; }
+  render(ctx, camera) {
+    const alpha = Math.min(1, this.life / (this.maxLife * 0.3));
+    ctx.globalAlpha = alpha;
+    const sx = Math.round(this.x - camera.x), sy = Math.round(this.y);
+    if (this.type === 'coin') {
+      ctx.fillStyle = '#F8B800'; ctx.fillRect(sx + 4, sy, 8, 14);
+      ctx.fillStyle = '#FFE000'; ctx.fillRect(sx + 2, sy + 2, 12, 10);
+      ctx.fillStyle = '#F8B800'; ctx.fillRect(sx + 6, sy + 4, 4, 6);
+    } else if (this.type === 'brick') {
+      ctx.fillStyle = '#C84C0C'; ctx.fillRect(sx, sy, 8, 8);
+      ctx.fillStyle = '#A03800'; ctx.fillRect(sx + 1, sy + 1, 6, 6);
+    } else if (this.type === 'score') {
+      ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 14px "Courier New"'; ctx.fillText('200', sx, sy);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ==================== SPRITE DRAWING ====================
+function drawSprite(ctx, sprite, x, y, facingRight) {
+  const pixelSize = 2;
+  for (let row = 0; row < sprite.length; row++) {
+    for (let col = 0; col < sprite[row].length; col++) {
+      const ch = sprite[row][col];
+      if (ch === '.') continue;
+      const color = COLOR[ch];
+      if (!color) continue;
+      let drawCol = facingRight ? col : (sprite[row].length - 1 - col);
+      ctx.fillStyle = color;
+      ctx.fillRect(x + drawCol * pixelSize, y + row * pixelSize, pixelSize, pixelSize);
+    }
+  }
+}
+
+// ==================== TILE RENDERING ====================
+function drawTile(ctx, tileType, x, y, bumpOffset) {
+  const bx = x, by = y + (bumpOffset || 0);
+
+  switch (tileType) {
+    case TILE.GROUND:
+      ctx.fillStyle = '#C84C0C'; ctx.fillRect(bx, by, TILE_SIZE, TILE_SIZE);
+      ctx.fillStyle = '#A03800';
+      for (let r = 0; r < TILE_SIZE; r += 8)
+        for (let c = (r % 16 === 0 ? 0 : 16); c < TILE_SIZE; c += 16)
+          ctx.fillRect(bx + c, by + r, 16, 4);
+      ctx.fillStyle = '#00A800'; ctx.fillRect(bx, by, TILE_SIZE, 4);
+      ctx.fillStyle = '#008800'; ctx.fillRect(bx, by + 4, TILE_SIZE, 2);
+      break;
+
+    case TILE.BRICK:
+      ctx.fillStyle = '#C84C0C'; ctx.fillRect(bx, by, TILE_SIZE, TILE_SIZE);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(bx + 15, by, 2, TILE_SIZE);
+      ctx.fillRect(bx, by + 15, TILE_SIZE, 2);
+      ctx.fillRect(bx, by + 7, TILE_SIZE, 1);
+      ctx.fillRect(bx + 7, by, 1, TILE_SIZE);
+      break;
+
+    case TILE.FAKE_BRICK:
+      // Fake brick: looks IDENTICAL to real brick to trick players!
+      ctx.fillStyle = '#C84C0C'; ctx.fillRect(bx, by, TILE_SIZE, TILE_SIZE);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(bx + 15, by, 2, TILE_SIZE);
+      ctx.fillRect(bx, by + 15, TILE_SIZE, 2);
+      ctx.fillRect(bx, by + 7, TILE_SIZE, 1);
+      ctx.fillRect(bx + 7, by, 1, TILE_SIZE);
+      break;
+
+    case TILE.QUESTION:
+      ctx.fillStyle = '#F8B800'; ctx.fillRect(bx, by, TILE_SIZE, TILE_SIZE);
+      ctx.fillStyle = '#D09000';
+      ctx.fillRect(bx, by, TILE_SIZE, 2); ctx.fillRect(bx, by, 2, TILE_SIZE);
+      ctx.fillRect(bx, by + TILE_SIZE - 2, TILE_SIZE, 2); ctx.fillRect(bx + TILE_SIZE - 2, by, 2, TILE_SIZE);
+      ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 20px "Courier New"'; ctx.textAlign = 'center';
+      ctx.fillText('?', bx + TILE_SIZE / 2, by + TILE_SIZE - 10); ctx.textAlign = 'start';
+      break;
+
+    case TILE.USED:
+      ctx.fillStyle = '#886848'; ctx.fillRect(bx, by, TILE_SIZE, TILE_SIZE);
+      ctx.fillStyle = '#6B5038'; ctx.fillRect(bx, by, TILE_SIZE, 2); ctx.fillRect(bx, by, 2, TILE_SIZE);
+      break;
+
+    case TILE.PIPE_TL: case TILE.PIPE_TR:
+      ctx.fillStyle = '#00A800'; ctx.fillRect(bx, by, TILE_SIZE, TILE_SIZE);
+      ctx.fillStyle = '#00D800'; ctx.fillRect(bx + 2, by, TILE_SIZE - 4, TILE_SIZE);
+      ctx.fillStyle = '#008800'; ctx.fillRect(bx, by, TILE_SIZE, 3);
+      if (tileType === TILE.PIPE_TL) ctx.fillRect(bx, by, 3, TILE_SIZE);
+      else ctx.fillRect(bx + TILE_SIZE - 3, by, 3, TILE_SIZE);
+      break;
+
+    case TILE.PIPE_BL: case TILE.PIPE_BR:
+      ctx.fillStyle = '#00A800'; ctx.fillRect(bx, by, TILE_SIZE, TILE_SIZE);
+      ctx.fillStyle = '#00D800'; ctx.fillRect(bx + 2, by, TILE_SIZE - 4, TILE_SIZE);
+      ctx.fillStyle = '#008800';
+      if (tileType === TILE.PIPE_BL) ctx.fillRect(bx, by, 3, TILE_SIZE);
+      else ctx.fillRect(bx + TILE_SIZE - 3, by, 3, TILE_SIZE);
+      break;
+
+    case TILE.FLAG_POLE:
+      ctx.fillStyle = '#00A800'; ctx.fillRect(bx + 14, by, 4, TILE_SIZE);
+      ctx.fillStyle = '#00D800'; ctx.fillRect(bx + 15, by, 2, TILE_SIZE);
+      break;
+
+    case TILE.FLAG_TOP:
+      ctx.fillStyle = '#00A800'; ctx.fillRect(bx + 14, by, 4, TILE_SIZE);
+      ctx.fillStyle = '#00FF00';
+      ctx.beginPath(); ctx.moveTo(bx + 16, by); ctx.lineTo(bx + 16, by + 12); ctx.lineTo(bx + 2, by + 6); ctx.closePath();
+      ctx.fill();
+      break;
+  }
+}
+
+// ==================== GAME CLASS ====================
+class Game {
+  constructor() {
+    this.state = STATE.START;
+    this.score = 0;
+    this.coins = 0;
+    this.lives = 3;
+    this.level = 1;
+    this.camera = { x: 0, y: 0 };
+    this.keys = { left: false, right: false, up: false, jump: false };
+    this.map = LEVEL_MAP_FUNCS[1]();
+    this.player = new Player();
+    this.enemies = [];
+    this.piranhas = [];
+    this.particles = [];
+    this.bumpBlocks = new Map();
+    this.questionBlockStates = new Map();
+    this.frameCount = 0;
+    this.deathDelay = 0;
+    this.winTimer = 0;
+    this.levelClearTimer = 0;
+    this.initInput();
+  }
+
+  initInput() {
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') { this.keys.left = true; e.preventDefault(); }
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') { this.keys.right = true; e.preventDefault(); }
+      if (e.code === 'ArrowUp' || e.code === 'KeyW') { this.keys.up = true; e.preventDefault(); }
+      if (e.code === 'Space') { this.keys.jump = true; e.preventDefault(); }
+
+      if (this.state === STATE.START) { this.startGame(); return; }
+      if (this.state === STATE.WIN && e.code === 'Space') { this.restartGame(); return; }
+      if (this.state === STATE.DEAD && e.code === 'Space') { this.respawnPlayer(); return; }
+
+      // Pause toggle (P or Escape)
+      if ((e.code === 'KeyP' || e.code === 'Escape') && (this.state === STATE.PLAYING || this.state === STATE.PAUSED)) {
+        this.state = this.state === STATE.PAUSED ? STATE.PLAYING : STATE.PAUSED;
+        e.preventDefault();
+      }
+
+      // Restart current level (R key)
+      if (e.code === 'KeyR' && (this.state === STATE.PLAYING || this.state === STATE.PAUSED)) {
+        this.restartLevel(); e.preventDefault();
+      }
+
+      // Restart whole game (Backspace or Numpad0)
+      if ((e.code === 'Backspace' || e.code === 'Numpad0') && (this.state === STATE.PLAYING || this.state === STATE.PAUSED)) {
+        this.restartGame(); e.preventDefault();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') { this.keys.left = false; e.preventDefault(); }
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') { this.keys.right = false; e.preventDefault(); }
+      if (e.code === 'ArrowUp' || e.code === 'KeyW') { this.keys.up = false; e.preventDefault(); }
+      if (e.code === 'Space') { this.keys.jump = false; e.preventDefault(); }
+    });
+  }
+
+  startGame() {
+    this.state = STATE.PLAYING;
+    this.score = 0; this.coins = 0; this.lives = 3; this.level = 1;
+    this.loadLevel(1);
+    this.camera.x = 0; this.deathDelay = 0; this.winTimer = 0; this.levelClearTimer = 0;
+  }
+
+  restartGame() { this.startGame(); }
+
+  restartLevel() {
+    this.state = STATE.PLAYING;
+    this.camera.x = 0; this.deathDelay = 0; this.winTimer = 0; this.levelClearTimer = 0;
+    this.player.reset();
+    this.player.isInvincible = true;
+    this.player.invincibleTimer = 120;
+    this.enemies = (ENEMY_SPAWNS[this.level] || []).map(s => new Enemy(s.col, s.row));
+    this.piranhas = (PIRANHA_SPAWNS[this.level] || []).map(s => new PiranhaPlant(s.col, s.pipeTopRow, s.pipeHeight));
+    this.particles = [];
+    this.bumpBlocks.clear();
+    this.questionBlockStates.clear();
+    this.map = LEVEL_MAP_FUNCS[this.level]();
+  }
+
+  loadLevel(lvl) {
+    this.level = lvl;
+    this.map = LEVEL_MAP_FUNCS[lvl]();
+    this.player.reset();
+    this.enemies = (ENEMY_SPAWNS[lvl] || []).map(s => new Enemy(s.col, s.row));
+    this.piranhas = (PIRANHA_SPAWNS[lvl] || []).map(s => new PiranhaPlant(s.col, s.pipeTopRow, s.pipeHeight));
+    this.particles = [];
+    this.bumpBlocks.clear();
+    this.questionBlockStates.clear();
+    this.camera.x = 0;
+  }
+
+  respawnPlayer() {
+    this.player.reset();
+    this.player.isInvincible = true;
+    this.player.invincibleTimer = 120;
+    this.camera.x = 0;
+    this.deathDelay = 0;
+    this.enemies = (ENEMY_SPAWNS[this.level] || []).map(s => new Enemy(s.col, s.row));
+    this.piranhas = (PIRANHA_SPAWNS[this.level] || []).map(s => new PiranhaPlant(s.col, s.pipeTopRow, s.pipeHeight));
+    this.particles = [];
+    this.bumpBlocks.clear();
+    this.questionBlockStates.clear();
+    this.map = LEVEL_MAP_FUNCS[this.level]();
+    this.state = STATE.PLAYING;
+  }
+
+  update() {
+    // Level clear transition
+    if (this.state === STATE.LEVEL_CLEAR) {
+      this.levelClearTimer--;
+      if (this.levelClearTimer <= 0) {
+        if (this.level >= 3) {
+          this.state = STATE.WIN;
+          this.winTimer = 180;
+        } else {
+          this.loadLevel(this.level + 1);
+          this.state = STATE.PLAYING;
+        }
+      }
+      return;
+    }
+
+    if (this.state !== STATE.PLAYING && this.state !== STATE.PAUSED) {
+      if (this.state === STATE.DEAD) {
+        this.player.update(this.map, this.keys, this.bumpBlocks);
+        this.deathDelay--;
+        if (this.deathDelay <= 0 && this.player.y > CANVAS_HEIGHT + 100) {
+          this.respawnPlayer();
+        }
+      }
+      if (this.state === STATE.WIN) { this.winTimer--; }
+      return;
+    }
+
+    this.frameCount++;
+
+    this.player.update(this.map, this.keys, this.bumpBlocks);
+
+    // Smooth camera
+    const targetCamX = this.player.x - CANVAS_WIDTH / 3;
+    this.camera.x += (targetCamX - this.camera.x) * 0.1;
+    if (this.camera.x < 0) this.camera.x = 0;
+    if (this.camera.x > MAP_WIDTH - CANVAS_WIDTH) this.camera.x = MAP_WIDTH - CANVAS_WIDTH;
+
+    this.enemies = this.enemies.filter(e => !e.update(this.map));
+    this.piranhas.forEach(p => p.update(this.map));
+    this.particles = this.particles.filter(p => !p.update());
+
+    for (const [key, data] of this.bumpBlocks) {
+      data.timer--;
+      data.offset = -8 * (data.timer / 12);
+      if (data.timer <= 0) this.bumpBlocks.delete(key);
+    }
+
+    this.processBumpBlocks();
+    this.checkEnemyCollisions();
+    this.checkPiranhaCollisions();
+    this.checkFlagPole();
+
+    if (this.player.y > MAP_HEIGHT + 64 && this.player.deadTimer <= 0) {
+      this.playerDie();
+    }
+  }
+
+  processBumpBlocks() {
+    const toProcess = [];
+    for (const [key, data] of this.bumpBlocks) {
+      if (data.timer === 11) toProcess.push({ key, col: data.col, row: data.row });
+    }
+    for (const { key, col, row } of toProcess) {
+      const tile = this.map[row][col];
+      if (tile === TILE.QUESTION) {
+        const stateKey = `${col},${row}`;
+        if (!this.questionBlockStates.has(stateKey)) {
+          this.questionBlockStates.set(stateKey, true);
+          this.map[row][col] = TILE.USED;
+          this.coins++; this.score += 200;
+          const cx = col * TILE_SIZE + TILE_SIZE / 2, cy = row * TILE_SIZE;
+          this.particles.push(new Particle(cx - 8, cy - 16, 0, -5, 'coin', 35));
+          this.particles.push(new Particle(cx - 10, cy - 20, 0, -2, 'score', 25));
+        }
+      } else if (tile === TILE.BRICK) {
+        this.map[row][col] = TILE.AIR; this.score += 50;
+        const bx = col * TILE_SIZE, by = row * TILE_SIZE;
+        this.particles.push(new Particle(bx, by, -2, -6, 'brick', 30));
+        this.particles.push(new Particle(bx + 8, by, 0, -7, 'brick', 30));
+        this.particles.push(new Particle(bx + 16, by, 2, -6, 'brick', 30));
+        this.particles.push(new Particle(bx + 4, by + 8, -1, -5, 'brick', 28));
+        this.particles.push(new Particle(bx + 20, by + 8, 1, -5, 'brick', 28));
+      }
+    }
+  }
+
+  checkEnemyCollisions() {
+    if (this.player.deadTimer > 0 || this.player.isInvincible) return;
+    const pb = this.player.getBounds();
+    for (const enemy of this.enemies) {
+      if (!enemy.alive) continue;
+      const eb = enemy.getBounds();
+      if (!eb) continue;
+      if (pb.x < eb.x + eb.w && pb.x + pb.w > eb.x && pb.y < eb.y + eb.h && pb.y + pb.h > eb.y) {
+        const playerBottomPrev = pb.y + pb.h - this.player.vy;
+        if (this.player.vy > 0 && playerBottomPrev <= eb.y + eb.h * 0.4) {
+          enemy.squish();
+          this.player.vy = -8;
+          this.score += 100;
+          this.particles.push(new Particle(eb.x + eb.w / 2, eb.y, 0, -3, 'score', 20));
+        } else {
+          this.playerHit();
+        }
+        break;
+      }
+    }
+  }
+
+  playerHit() {
+    if (this.player.isInvincible || this.player.deadTimer > 0) return;
+    this.playerDie();
+  }
+
+  checkPiranhaCollisions() {
+    if (this.player.deadTimer > 0 || this.player.isInvincible) return;
+    const pb = this.player.getBounds();
+    for (const piranha of this.piranhas) {
+      if (!piranha.alive) continue;
+      const pib = piranha.getBounds();
+      if (!pib) continue; // hidden = no collision
+      if (pb.x < pib.x + pib.w && pb.x + pb.w > pib.x && pb.y < pib.y + pib.h && pb.y + pb.h > pib.y) {
+        // Piranha Plants cannot be stomped! Touching = damage
+        this.playerHit();
+        break;
+      }
+    }
+  }
+
+  playerDie() {
+    this.lives--;
+    this.player.die();
+    this.state = STATE.DEAD;
+    this.deathDelay = 60;
+  }
+
+  checkFlagPole() {
+    if (this.player.deadTimer > 0) return;
+    const flagCol = 198;
+    const flagX = flagCol * TILE_SIZE;
+    if (this.player.x + this.player.width > flagX && this.player.x < flagX + TILE_SIZE) {
+      this.score += 2000;
+      this.state = STATE.LEVEL_CLEAR;
+      this.levelClearTimer = 90;
+    }
+  }
+
+  render() {
+    // Sky background (unique per level)
+    if (this.level === 2) {
+      // Underground: dark cave with stalactite silhouette
+      const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+      grad.addColorStop(0, '#0d0d1a'); grad.addColorStop(1, '#1a1a2e');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      // Stalactites along top
+      ctx.fillStyle = '#2a2a3e';
+      for (let x = 0; x < CANVAS_WIDTH; x += 60) {
+        const offset = ((x * 7 + 31) % 40) + 15;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + offset / 2, offset); ctx.lineTo(x + offset, 0); ctx.fill();
+      }
+      // Glow at bottom (lava tint)
+      ctx.fillStyle = 'rgba(180, 60, 30, 0.08)'; ctx.fillRect(0, CANVAS_HEIGHT - 80, CANVAS_WIDTH, 80);
+    } else if (this.level === 3) {
+      // Sky castle: sunset gradient with clouds
+      const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+      grad.addColorStop(0, '#FF6B35'); grad.addColorStop(0.3, '#FF9E53');
+      grad.addColorStop(0.6, '#87CEEB'); grad.addColorStop(1, '#B8E0F0');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      // Decorative clouds
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      for (let i = 0; i < 8; i++) {
+        const cx = (i * 270 + 100 - this.camera.x * 0.2) % (CANVAS_WIDTH + 200) - 100;
+        const cy = 30 + (i * 37) % 60;
+        ctx.beginPath(); ctx.ellipse(cx, cy, 50, 18, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(cx + 30, cy - 5, 35, 15, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      // Sun
+      ctx.fillStyle = 'rgba(255,220,100,0.6)';
+      ctx.beginPath(); ctx.arc(CANVAS_WIDTH - 80, 60, 35, 0, Math.PI * 2); ctx.fill();
+    } else {
+      // 1-1: Classic blue sky with fluffy clouds
+      const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+      grad.addColorStop(0, '#5C94FC'); grad.addColorStop(1, '#A8D8FF');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      // Clouds
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      for (let i = 0; i < 6; i++) {
+        const cx = (i * 340 + 80 - this.camera.x * 0.15) % (CANVAS_WIDTH + 200) - 100;
+        const cy = 40 + (i * 43) % 50;
+        ctx.beginPath(); ctx.ellipse(cx, cy, 45, 16, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(cx + 25, cy - 6, 30, 13, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(cx - 20, cy + 2, 25, 11, 0, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // Draw tiles
+    const startCol = Math.floor(this.camera.x / TILE_SIZE);
+    const endCol = Math.min(MAP_COLS - 1, Math.ceil((this.camera.x + CANVAS_WIDTH) / TILE_SIZE));
+
+    for (let r = 0; r < MAP_ROWS; r++) {
+      for (let c = startCol; c <= endCol; c++) {
+        const tile = this.map[r][c];
+        if (tile === TILE.AIR) continue;
+        const bx = c * TILE_SIZE - this.camera.x, by = r * TILE_SIZE;
+        const bumpData = this.bumpBlocks.get(`${c},${r}`);
+        drawTile(ctx, tile, bx, by, bumpData ? bumpData.offset : 0);
+      }
+    }
+
+    for (const enemy of this.enemies) enemy.render(ctx, this.camera);
+    for (const piranha of this.piranhas) piranha.render(ctx, this.camera);
+    for (const particle of this.particles) particle.render(ctx, this.camera);
+    this.player.render(ctx, this.camera);
+
+    this.drawHUD();
+
+    if (this.state === STATE.START) this.drawStartScreen();
+    else if (this.state === STATE.LEVEL_CLEAR) this.drawLevelClearScreen();
+    else if (this.state === STATE.PAUSED) this.drawPauseScreen();
+    else if (this.state === STATE.DEAD && this.deathDelay <= 0 && this.player.y > CANVAS_HEIGHT + 100) this.drawDeadScreen();
+    else if (this.state === STATE.WIN && this.winTimer < 150) this.drawWinScreen();
+  }
+
+  drawHUD() {
+    ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(0, 0, CANVAS_WIDTH, 36);
+    ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 16px "Courier New"'; ctx.textAlign = 'left';
+    ctx.fillText(`MARIO`, 16, 16);
+    ctx.fillText(`${String(this.score).padStart(6, '0')}`, 16, 32);
+
+    ctx.textAlign = 'center';
+    ctx.fillText(`×${String(this.coins).padStart(2, '0')}`, CANVAS_WIDTH / 2 + 40, 24);
+    ctx.fillStyle = '#F8B800'; ctx.fillRect(CANVAS_WIDTH / 2 + 10, 12, 10, 14);
+    ctx.fillStyle = '#FFE000'; ctx.fillRect(CANVAS_WIDTH / 2 + 12, 14, 6, 10);
+
+    ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'right';
+    ctx.fillText(`WORLD`, CANVAS_WIDTH - 100, 16);
+    ctx.fillText(`1-${this.level}`, CANVAS_WIDTH - 100, 32);
+    const livesColor = this.lives < 0 ? '#FF4444' : this.lives <= 1 ? '#FFAA00' : '#FFFFFF';
+    ctx.fillStyle = livesColor;
+    ctx.fillText(`LIVES: ${this.lives}`, CANVAS_WIDTH - 16, 16);
+
+    // Controls hint
+    if (this.state === STATE.PLAYING) {
+      ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.textAlign = 'right';
+      ctx.font = '10px "Courier New"';
+      ctx.fillText('P:pause R:restart', CANVAS_WIDTH - 16, 30);
+    }
+
+    ctx.textAlign = 'start';
+  }
+
+  drawStartScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center';
+    ctx.font = 'bold 36px "Courier New"'; ctx.fillText('SUPER  MARIO', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 80);
+    ctx.font = '18px "Courier New"'; ctx.fillText('3 LEVELS · HARD EDITION', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 45);
+    ctx.fillStyle = '#F8B800'; ctx.font = 'bold 20px "Courier New"';
+    ctx.fillText('PRESS ANY KEY TO START', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+    ctx.fillStyle = '#AAAAAA'; ctx.font = '14px "Courier New"';
+    ctx.fillText('← → / A D : Move    ↑ / W / SPACE : Jump', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 40);
+    ctx.fillText('P / Esc : Pause    R : Restart Level    Backspace : Restart Game', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 60);
+    ctx.fillStyle = '#FF6666'; ctx.font = 'bold 13px "Courier New"';
+    ctx.fillText('WARNING: Some bricks are FAKE! Piranha Plants are deadly!', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 85);
+    ctx.fillStyle = '#88CCFF'; ctx.font = '13px "Courier New"';
+    ctx.fillText('1-1: Grassland  |  1-2: Underground Cave  |  1-3: Sky Castle', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 110);
+    ctx.textAlign = 'start';
+  }
+
+  drawLevelClearScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.fillStyle = '#F8B800'; ctx.textAlign = 'center';
+    ctx.font = 'bold 28px "Courier New"';
+    ctx.fillText(`LEVEL 1-${this.level} CLEAR!`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 30);
+    ctx.fillStyle = '#FFFFFF'; ctx.font = '18px "Courier New"';
+    if (this.level === 1) {
+      ctx.fillText('Next: UNDERGROUND CAVE', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 10);
+      ctx.fillStyle = '#AAAAAA'; ctx.font = '14px "Courier New"';
+      ctx.fillText('No gaps — but dense enemies & Piranha infestation!', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 40);
+    } else if (this.level === 2) {
+      ctx.fillText('Next: SKY CASTLE', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 10);
+      ctx.fillStyle = '#AAAAAA'; ctx.font = '14px "Courier New"';
+      ctx.fillText('Floating platforms — watch for fake bridges!', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 40);
+    } else {
+      ctx.fillText('ALL LEVELS COMPLETE!', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 10);
+    }
+    ctx.textAlign = 'start';
+  }
+
+  drawDeadScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.fillStyle = '#E52521'; ctx.textAlign = 'center';
+    ctx.font = 'bold 30px "Courier New"';
+    if (this.lives >= 0) ctx.fillText(`LIVES LEFT: ${this.lives}`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 10);
+    else ctx.fillText(`LIVES: ${this.lives} (KEEP GOING!)`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 10);
+    ctx.fillStyle = '#F8B800'; ctx.font = 'bold 16px "Courier New"';
+    ctx.fillText('PRESS SPACE TO RESPAWN', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 30);
+    ctx.textAlign = 'start';
+  }
+
+  drawPauseScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.fillStyle = '#F8B800'; ctx.textAlign = 'center';
+    ctx.font = 'bold 32px "Courier New"'; ctx.fillText('⏸  PAUSED', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 60);
+    ctx.fillStyle = '#FFFFFF'; ctx.font = '16px "Courier New"';
+    ctx.fillText('P / Esc — Resume', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 15);
+    ctx.fillText('R — Restart This Level', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 20);
+    ctx.fillText('Backspace — Restart Whole Game', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 55);
+    ctx.textAlign = 'start';
+  }
+
+  drawWinScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.fillStyle = '#F8B800'; ctx.textAlign = 'center';
+    ctx.font = 'bold 36px "Courier New"'; ctx.fillText('YOU WIN!', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 30);
+    ctx.fillStyle = '#FFFFFF'; ctx.font = '18px "Courier New"';
+    ctx.fillText(`SCORE: ${this.score}    COINS: ${this.coins}`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 20);
+    ctx.fillStyle = '#F8B800'; ctx.font = 'bold 16px "Courier New"';
+    ctx.fillText('PRESS SPACE TO PLAY AGAIN', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 60);
+    ctx.textAlign = 'start';
+  }
+}
+
+// ==================== GAME LOOP ====================
+const game = new Game();
+function gameLoop() { game.update(); game.render(); requestAnimationFrame(gameLoop); }
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
